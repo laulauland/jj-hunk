@@ -1,0 +1,7 @@
+# FP snapshot directory (isolated git repo for workdir snapshots)
+.fp/snapshots/
+
+
+# Added by cargo
+
+/target
