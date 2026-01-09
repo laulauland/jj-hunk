@@ -6,9 +6,13 @@ Select specific diff hunks when splitting, committing, or squashing—without in
 
 ## Installation
 
+### 1. Install the binary
+
 ```bash
 cargo install jj-hunk
 ```
+
+### 2. Configure jj
 
 Add to `~/.jjconfig.toml`:
 
@@ -16,6 +20,12 @@ Add to `~/.jjconfig.toml`:
 [merge-tools.jj-hunk]
 program = "jj-hunk"
 edit-args = ["select", "$left", "$right"]
+```
+
+### 3. Verify
+
+```bash
+jj-hunk --help
 ```
 
 ## Quick Start
@@ -96,13 +106,51 @@ JJ_HUNK_SELECTION=/tmp/spec.json jj split -i --tool=jj-hunk -m "message"
 ## Use Cases
 
 ### AI Agents
-Create clean, logical commits programmatically without interactive prompts.
 
-### Automation
-Script commit splitting in CI/CD or git hooks.
+The primary use case. AI agents can create clean, logical commits without interactive prompts. Instead of dumping all changes into one commit, an agent can:
 
-### Batch Operations
-Process multiple repositories with consistent commit hygiene.
+1. Analyze changes with `jj-hunk list`
+2. Group files by logical concern (schema, services, tests, etc.)
+3. Split iteratively to create a narrative commit history
+
+The JSON spec format is easy for LLMs to construct programmatically.
+
+### Clean History Workflow
+
+Reorganize messy development history into reviewer-friendly commits. Squash everything, then split by concern:
+
+```bash
+jj squash --from 'all:trunk()..@-' --into @
+jj edit @
+jj-hunk split '{"files": {"src/db/schema.ts": {"action": "keep"}}, "default": "reset"}' "feat: add schema"
+jj-hunk split '{"files": {"src/api/routes.ts": {"action": "keep"}}, "default": "reset"}' "feat: add routes"
+jj describe -m "feat: add UI"
+```
+
+See `.claude/commands/clean-history.md` for a complete workflow.
+
+### CI/CD Automation
+
+Script commit splitting in pipelines. Enforce commit hygiene rules, auto-split by file patterns, or validate that commits are properly scoped.
+
+### Partial Commits
+
+Keep experimental code in working copy while committing only the finished parts:
+
+```bash
+jj-hunk commit '{"files": {"src/fix.rs": {"action": "keep"}}, "default": "reset"}' "fix: handle edge case"
+# Experimental changes remain uncommitted
+```
+
+## Claude Code Integration
+
+This repo includes a Claude Code command for the clean history workflow:
+
+```
+/clean-history [bookmark-name]
+```
+
+The command guides through squashing, splitting, and creating a PR with narrative-quality commits.
 
 ## License
 

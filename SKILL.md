@@ -144,8 +144,121 @@ JJ_HUNK_SELECTION=/tmp/spec.json jj split -i --tool=jj-hunk -m "message"
 | `delete` | Lines removed |
 | `replace` | Lines changed (removed + added) |
 
+## Agent Workflow Examples
+
+### Understanding the Output
+
+Always start by inspecting what hunks exist:
+
+```bash
+jj-hunk list
+```
+
+Example output:
+```json
+{
+  "src/db/schema.ts": [
+    {"index": 0, "type": "insert", "added": "import { pgTable }...\n"},
+    {"index": 1, "type": "insert", "added": "export const users = pgTable...\n"},
+    {"index": 2, "type": "insert", "added": "export const posts = pgTable...\n"}
+  ],
+  "src/api/routes.ts": [
+    {"index": 0, "type": "replace", "removed": "// TODO\n", "added": "app.get('/users', ...);\n"},
+    {"index": 1, "type": "insert", "added": "app.get('/posts', ...);\n"}
+  ],
+  "src/lib/utils.ts": [
+    {"index": 0, "type": "replace", "removed": "function old()...\n", "added": "function new()...\n"},
+    {"index": 1, "type": "insert", "added": "export function helper()...\n"},
+    {"index": 2, "type": "delete", "removed": "// dead code\n"}
+  ]
+}
+```
+
+### File-Level Selection
+
+When all hunks in a file belong to the same logical change:
+
+```bash
+# Keep entire file, reset everything else
+jj-hunk split '{"files": {"src/db/schema.ts": {"action": "keep"}}, "default": "reset"}' "feat: add database schema"
+```
+
+### Hunk-Level Selection
+
+When a single file has mixed concerns (most powerful feature):
+
+```bash
+# src/lib/utils.ts has:
+#   - hunks 0, 2: refactoring (rename + delete dead code)
+#   - hunk 1: new feature (helper function)
+
+# Extract just the refactoring
+jj-hunk split '{"files": {"src/lib/utils.ts": {"hunks": [0, 2]}}, "default": "reset"}' "refactor: clean up utils"
+
+# Hunk 1 remains in working copy for the next commit
+jj describe -m "feat: add helper function"
+```
+
+### Mixed Selection
+
+Combine file-level and hunk-level in one spec:
+
+```bash
+# Keep all of schema.ts + only hunk 0 from routes.ts
+jj-hunk split '{"files": {"src/db/schema.ts": {"action": "keep"}, "src/api/routes.ts": {"hunks": [0]}}, "default": "reset"}' "feat: add users table and endpoint"
+
+# Next: remaining routes.ts hunk
+jj-hunk split '{"files": {"src/api/routes.ts": {"action": "keep"}}, "default": "reset"}' "feat: add posts endpoint"
+
+# Final: utils changes
+jj describe -m "refactor: utils cleanup"
+```
+
+### Complete Workflow Example
+
+Starting with a messy commit containing schema, API, and refactoring changes:
+
+```bash
+# 1. Edit the commit
+jj edit <revision>
+
+# 2. Inspect all hunks
+jj-hunk list
+
+# 3. Split in narrative order
+
+# Infrastructure first
+jj-hunk split '{"files": {"src/db/schema.ts": {"action": "keep"}}, "default": "reset"}' "feat: add database schema"
+
+# Refactoring second (specific hunks from utils.ts)
+jj-hunk split '{"files": {"src/lib/utils.ts": {"hunks": [0, 2]}}, "default": "reset"}' "refactor: clean up utils"
+
+# Feature using the refactored code
+jj-hunk split '{"files": {"src/lib/utils.ts": {"action": "keep"}, "src/api/routes.ts": {"hunks": [0]}}, "default": "reset"}' "feat: add users endpoint"
+
+# Remaining changes
+jj describe -m "feat: add posts endpoint"
+
+# 4. Verify
+jj log -r 'trunk()..@'
+```
+
+### Verifying Splits
+
+After splitting, verify each commit has the right content:
+
+```bash
+# Check stats for each commit
+jj diff -r <rev1> --stat
+jj diff -r <rev2> --stat
+
+# Or view the log
+jj log
+```
+
 ## Tips
 
 - **Always list first**: Run `jj-hunk list` to see hunk indices before building specs
 - **Use default wisely**: `"default": "reset"` is safer (explicit inclusion), `"default": "keep"` is convenient for excluding specific files
 - **Combine with jj**: After splitting, use `jj describe` to refine commit messages
+- **Exact paths required**: File paths must match exactly (e.g., `"src/lib.rs"` not `"src/"`)
