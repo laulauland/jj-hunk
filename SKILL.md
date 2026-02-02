@@ -33,31 +33,86 @@ edit-args = ["select", "$left", "$right"]
 
 ```bash
 jj-hunk list
+
+# List hunks for a specific revision (diff vs parent)
+# Note: revset must resolve to a single revision
+jj-hunk list --rev @
+
+# Emit YAML instead of JSON
+jj-hunk list --format yaml
 ```
+
+Options:
+- `--rev <revset>` — diff the revision against its parent (revset must resolve to a single revision)
+- `--format json|yaml|text` — output format (default: json)
+- `--include <glob>` / `--exclude <glob>` — filter paths (repeatable)
+- `--group none|directory|extension|status` — group output
+- `--binary skip|mark|include` — binary handling (default: mark)
+- `--max-bytes <n>` / `--max-lines <n>` — truncate before diffing
+- `--spec <json|yaml>` / `--spec-file <path>` — preview using a spec filter
+- `--files` — list files with hunk counts only
+- `--spec-template` — emit a spec template (JSON/YAML only)
 
 Output (JSON):
 ```json
 {
-  "src/foo.rs": [
-    {"index": 0, "type": "replace", "removed": "old\n", "added": "new\n"},
-    {"index": 1, "type": "insert", "removed": "", "added": "// added\n"}
-  ],
-  "src/bar.rs": [
-    {"index": 0, "type": "delete", "removed": "removed\n", "added": ""}
+  "files": [
+    {
+      "path": "src/foo.rs",
+      "status": "modified",
+      "hunks": [
+        {
+          "id": "hunk-7c3d...",
+          "index": 0,
+          "type": "replace",
+          "removed": "old\n",
+          "added": "new\n",
+          "before": {"start": 1, "lines": 1},
+          "after": {"start": 1, "lines": 1}
+        },
+        {
+          "id": "hunk-2f91...",
+          "index": 1,
+          "type": "insert",
+          "removed": "",
+          "added": "// added\n",
+          "before": {"start": 2, "lines": 0},
+          "after": {"start": 2, "lines": 1}
+        }
+      ]
+    },
+    {
+      "path": "src/bar.rs",
+      "status": "modified",
+      "hunks": [
+        {
+          "id": "hunk-aa12...",
+          "index": 0,
+          "type": "delete",
+          "removed": "removed\n",
+          "added": "",
+          "before": {"start": 3, "lines": 1},
+          "after": {"start": 3, "lines": 0}
+        }
+      ]
+    }
   ]
 }
 ```
 
+Each hunk includes a stable `id` (sha256) alongside the 0-based `index`.
+
 ### 2. Build a Spec
 
-Select hunks by index or use file-level actions:
+Select hunks by index or `id` (emitted as `hunk-<sha256>`), or use file-level actions. Specs can be JSON or YAML:
 
 ```json
 {
   "files": {
-    "src/foo.rs": {"hunks": [0]},
-    "src/bar.rs": {"action": "keep"},
-    "src/baz.rs": {"action": "reset"}
+    "src/foo.rs": {"hunks": [0, "hunk-7c3d..."]},
+    "src/bar.rs": {"ids": ["hunk-aa12..."]},
+    "src/baz.rs": {"action": "keep"},
+    "src/qux.rs": {"action": "reset"}
   },
   "default": "reset"
 }
@@ -66,19 +121,31 @@ Select hunks by index or use file-level actions:
 | Spec | Effect |
 |------|--------|
 | `{"hunks": [0, 2]}` | Include only hunks 0 and 2 |
+| `{"hunks": ["hunk-..."]}` | Include hunks by id string |
+| `{"ids": ["hunk-..."]}` | Include hunks by stable id |
 | `{"action": "keep"}` | Include all changes |
 | `{"action": "reset"}` | Discard all changes |
 | `"default": "reset"` | Unlisted files are discarded |
 | `"default": "keep"` | Unlisted files are kept |
 
+`ids` and `hunks` are merged if both are provided.
+
 ### 3. Execute
+
+Specs can be provided inline, read from stdin with `-`, or loaded via `--spec-file` (omit `<spec>` when using `--spec-file`).
 
 ```bash
 # Split: selected hunks → first commit, rest → second commit
 jj-hunk split '<spec>' "commit message"
 
+# Read spec from a file (JSON or YAML)
+jj-hunk split --spec-file spec.yaml "commit message"
+
 # Commit: selected hunks committed, rest stays in working copy
 jj-hunk commit '<spec>' "commit message"
+
+# Read spec from stdin
+cat spec.json | jj-hunk commit - "commit message"
 
 # Squash: selected hunks squashed into parent
 jj-hunk squash '<spec>'
@@ -157,19 +224,32 @@ jj-hunk list
 Example output:
 ```json
 {
-  "src/db/schema.ts": [
-    {"index": 0, "type": "insert", "added": "import { pgTable }...\n"},
-    {"index": 1, "type": "insert", "added": "export const users = pgTable...\n"},
-    {"index": 2, "type": "insert", "added": "export const posts = pgTable...\n"}
-  ],
-  "src/api/routes.ts": [
-    {"index": 0, "type": "replace", "removed": "// TODO\n", "added": "app.get('/users', ...);\n"},
-    {"index": 1, "type": "insert", "added": "app.get('/posts', ...);\n"}
-  ],
-  "src/lib/utils.ts": [
-    {"index": 0, "type": "replace", "removed": "function old()...\n", "added": "function new()...\n"},
-    {"index": 1, "type": "insert", "added": "export function helper()...\n"},
-    {"index": 2, "type": "delete", "removed": "// dead code\n"}
+  "files": [
+    {
+      "path": "src/db/schema.ts",
+      "status": "modified",
+      "hunks": [
+        {"id": "hunk-98af...", "index": 0, "type": "insert", "removed": "", "added": "import { pgTable }...\n", "before": {"start": 1, "lines": 0}, "after": {"start": 1, "lines": 1}},
+        {"id": "hunk-21b3...", "index": 1, "type": "insert", "removed": "", "added": "export const users = pgTable...\n", "before": {"start": 2, "lines": 0}, "after": {"start": 2, "lines": 1}}
+      ]
+    },
+    {
+      "path": "src/api/routes.ts",
+      "status": "modified",
+      "hunks": [
+        {"id": "hunk-cc19...", "index": 0, "type": "replace", "removed": "// TODO\n", "added": "app.get('/users', ...);\n", "before": {"start": 10, "lines": 1}, "after": {"start": 10, "lines": 1}},
+        {"id": "hunk-4b20...", "index": 1, "type": "insert", "removed": "", "added": "app.get('/posts', ...);\n", "before": {"start": 11, "lines": 0}, "after": {"start": 11, "lines": 1}}
+      ]
+    },
+    {
+      "path": "src/lib/utils.ts",
+      "status": "modified",
+      "hunks": [
+        {"id": "hunk-11bf...", "index": 0, "type": "replace", "removed": "function old()...\n", "added": "function new()...\n", "before": {"start": 5, "lines": 1}, "after": {"start": 5, "lines": 1}},
+        {"id": "hunk-ee43...", "index": 1, "type": "insert", "removed": "", "added": "export function helper()...\n", "before": {"start": 6, "lines": 0}, "after": {"start": 6, "lines": 1}},
+        {"id": "hunk-09ad...", "index": 2, "type": "delete", "removed": "// dead code\n", "added": "", "before": {"start": 20, "lines": 1}, "after": {"start": 20, "lines": 0}}
+      ]
+    }
   ]
 }
 ```
@@ -258,7 +338,8 @@ jj log
 
 ## Tips
 
-- **Always list first**: Run `jj-hunk list` to see hunk indices before building specs
+- **Always list first**: Run `jj-hunk list` to see hunk indices/ids before building specs
+- **Prefer ids for stability**: Use `ids` when hunks might shift between list and apply
 - **Use default wisely**: `"default": "reset"` is safer (explicit inclusion), `"default": "keep"` is convenient for excluding specific files
 - **Combine with jj**: After splitting, use `jj describe` to refine commit messages
 - **Exact paths required**: File paths must match exactly (e.g., `"src/lib.rs"` not `"src/"`)

@@ -1,6 +1,6 @@
 [package]
 name = "jj-hunk"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 description = "Programmatic hunk selection for jj"
 license = "MIT"
@@ -12,3 +12,5 @@ serde_json = "1"
 similar = "2"
 anyhow = "1"
 walkdir = "2"
+serde_yaml = "0.9"
+sha2 = "0.10"
