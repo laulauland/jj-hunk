@@ -234,16 +234,6 @@ jj-hunk commit '{"files": {"src/fix.rs": {"action": "keep"}}, "default": "reset"
 # Experimental changes remain uncommitted
 ```
 
-## Claude Code Integration
-
-This repo includes a Claude Code command for the clean history workflow:
-
-```
-/clean-history [bookmark-name]
-```
-
-The command guides through squashing, splitting, and creating a PR with narrative-quality commits.
-
 ## License
 
 MIT
