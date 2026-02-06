@@ -4,6 +4,7 @@ version = "0.3.0"
 edition = "2021"
 description = "Programmatic hunk selection for jj"
 license = "MIT"
+repository = "https://github.com/laulauland/jj-hunk"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
