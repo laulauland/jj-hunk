@@ -1,0 +1,116 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            bottle_tag: arm64_sequoia
+          - os: macos-13
+            target: x86_64-apple-darwin
+            bottle_tag: ventura
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            bottle_tag: x86_64_linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo build --release --target ${{ matrix.target }}
+      - name: Package bottle
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p "jj-hunk/${VERSION}/bin"
+          cp "target/${{ matrix.target }}/release/jj-hunk" "jj-hunk/${VERSION}/bin/"
+          tar czf "jj-hunk-${VERSION}.${{ matrix.bottle_tag }}.bottle.tar.gz" "jj-hunk/${VERSION}/"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bottle-${{ matrix.bottle_tag }}
+          path: "*.bottle.tar.gz"
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Generate changelog
+        uses: orhun/git-cliff-action@v4
+        id: changelog
+        with:
+          args: --latest --strip header
+        env:
+          OUTPUT: CHANGELOG.md
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: CHANGELOG.md
+          files: "*.bottle.tar.gz"
+
+  update-tap:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Update homebrew formula
+        env:
+          GH_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          SOURCE_SHA=$(curl -sL "https://github.com/laulauland/jj-hunk/archive/refs/tags/v${VERSION}.tar.gz" | shasum -a 256 | cut -d' ' -f1)
+          ARM64_SHA=$(shasum -a 256 "jj-hunk-${VERSION}.arm64_sequoia.bottle.tar.gz" | cut -d' ' -f1)
+          X86_MAC_SHA=$(shasum -a 256 "jj-hunk-${VERSION}.ventura.bottle.tar.gz" | cut -d' ' -f1)
+          LINUX_SHA=$(shasum -a 256 "jj-hunk-${VERSION}.x86_64_linux.bottle.tar.gz" | cut -d' ' -f1)
+
+          cat > /tmp/jj-hunk.rb << RUBY
+          class JjHunk < Formula
+            desc "Programmatic hunk selection for jj"
+            homepage "https://github.com/laulauland/jj-hunk"
+            url "https://github.com/laulauland/jj-hunk/archive/refs/tags/v${VERSION}.tar.gz"
+            sha256 "${SOURCE_SHA}"
+            license "MIT"
+
+            bottle do
+              root_url "https://github.com/laulauland/jj-hunk/releases/download/v${VERSION}"
+              sha256 arm64_sequoia: "${ARM64_SHA}"
+              sha256 ventura: "${X86_MAC_SHA}"
+              sha256 x86_64_linux: "${LINUX_SHA}"
+            end
+
+            depends_on "rust" => :build
+
+            def install
+              system "cargo", "install", *std_cargo_args
+            end
+
+            test do
+              assert_match "jj-hunk", shell_output("#{bin}/jj-hunk --help")
+            end
+          end
+          RUBY
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' /tmp/jj-hunk.rb
+
+          EXISTING_SHA=$(gh api repos/laulauland/homebrew-tap/contents/Formula/jj-hunk.rb --jq '.sha')
+          gh api repos/laulauland/homebrew-tap/contents/Formula/jj-hunk.rb \
+            --method PUT \
+            --field message="jj-hunk ${VERSION}" \
+            --field content="$(base64 -w0 /tmp/jj-hunk.rb)" \
+            --field sha="${EXISTING_SHA}"
