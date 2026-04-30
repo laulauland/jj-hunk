@@ -9,8 +9,8 @@ struct TestRepo {
 
 impl TestRepo {
     fn new(name: &str) -> Self {
-        let dir = std::env::temp_dir()
-            .join(format!("jj-hunk-test-{}-{}", name, std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("jj-hunk-test-{}-{}", name, std::process::id()));
         if dir.exists() {
             std::fs::remove_dir_all(&dir).unwrap();
         }
@@ -25,7 +25,11 @@ impl TestRepo {
             .env_remove("JJ_CONFIG")
             .output()
             .expect("jj git init failed");
-        assert!(out.status.success(), "jj git init: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "jj git init: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
 
         Self { dir }
     }
@@ -76,8 +80,34 @@ impl TestRepo {
             .expect("failed to run jj-hunk")
     }
 
+    fn hunk_with_empty_config(&self, args: &[&str]) -> std::process::Output {
+        let config = self.dir.join("empty-jj-config.toml");
+        std::fs::write(&config, "").unwrap();
+
+        Command::new(jj_hunk_bin())
+            .args(args)
+            .current_dir(&self.dir)
+            .env("JJ_USER", "Test User")
+            .env("JJ_EMAIL", "test@example.com")
+            .env("JJ_CONFIG", config)
+            .output()
+            .expect("failed to run jj-hunk")
+    }
+
     fn hunk_ok(&self, args: &[&str]) -> String {
         let out = self.hunk(args);
+        assert!(
+            out.status.success(),
+            "jj-hunk {:?} failed: {}{}",
+            args,
+            String::from_utf8_lossy(&out.stderr),
+            String::from_utf8_lossy(&out.stdout),
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    fn hunk_ok_with_empty_config(&self, args: &[&str]) -> String {
+        let out = self.hunk_with_empty_config(args);
         assert!(
             out.status.success(),
             "jj-hunk {:?} failed: {}{}",
@@ -141,7 +171,11 @@ fn jj_hunk_bin() -> PathBuf {
         .unwrap()
         .to_path_buf();
     path.push("jj-hunk");
-    assert!(path.exists(), "jj-hunk binary not found at {:?}. Run `cargo build` first.", path);
+    assert!(
+        path.exists(),
+        "jj-hunk binary not found at {:?}. Run `cargo build` first.",
+        path
+    );
     path
 }
 
@@ -241,8 +275,16 @@ fn split_rev_splits_non_working_copy_revision() {
     let files = repo.changed_files(change_id);
     let has_a = files.iter().any(|f| f.contains("a.txt"));
     let has_b = files.iter().any(|f| f.contains("b.txt"));
-    assert!(has_a, "split commit should contain a.txt changes: {:?}", files);
-    assert!(!has_b, "split commit should NOT contain b.txt changes: {:?}", files);
+    assert!(
+        has_a,
+        "split commit should contain a.txt changes: {:?}",
+        files
+    );
+    assert!(
+        !has_b,
+        "split commit should NOT contain b.txt changes: {:?}",
+        files
+    );
 }
 
 #[test]
@@ -331,7 +373,11 @@ fn squash_rev_squashes_non_working_copy_into_parent() {
     let has_c = mid_files.iter().any(|f| f.contains("c.txt"));
     let still_has_b = mid_files.iter().any(|f| f.contains("b.txt"));
     assert!(has_c, "@- should still have c.txt: {:?}", mid_files);
-    assert!(!still_has_b, "@- should NOT have b.txt anymore: {:?}", mid_files);
+    assert!(
+        !still_has_b,
+        "@- should NOT have b.txt anymore: {:?}",
+        mid_files
+    );
 }
 
 #[test]
@@ -372,16 +418,33 @@ fn commit_works_on_working_copy() {
     repo.hunk_ok(&["commit", spec, "commit a only"]);
 
     let log = repo.log_descriptions();
-    assert!(
-        log.iter().any(|d| d == "commit a only"),
-        "log: {:?}",
-        log
-    );
+    assert!(log.iter().any(|d| d == "commit a only"), "log: {:?}", log);
 
     // b.txt should still be in working copy
     let wc_files = repo.changed_files("@");
     let has_b = wc_files.iter().any(|f| f.contains("b.txt"));
     assert!(has_b, "b.txt should remain in working copy: {:?}", wc_files);
+}
+
+#[test]
+fn commit_self_configures_jj_hunk_tool_when_user_config_is_empty() {
+    let repo = TestRepo::new("commit-self-configures");
+
+    repo.write_file("a.txt", "aaa\n");
+    repo.jj_ok(&["commit", "-m", "base"]);
+
+    repo.write_file("a.txt", "AAA\n");
+    repo.write_file("b.txt", "BBB\n");
+
+    let spec = r#"{"files": {"a.txt": {"action": "keep"}}, "default": "reset"}"#;
+    repo.hunk_ok_with_empty_config(&["commit", spec, "commit a via self config"]);
+
+    let log = repo.log_descriptions();
+    assert!(
+        log.iter().any(|d| d == "commit a via self config"),
+        "log: {:?}",
+        log
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +461,10 @@ fn split_rev_invalid_revset_fails() {
     let spec = r#"{"files": {"a.txt": {"action": "keep"}}, "default": "reset"}"#;
     let err = repo.hunk_fail(&["split", "-r", "nonexistent_bookmark", spec, "msg"]);
     assert!(
-        err.contains("failed") || err.contains("error") || err.contains("Error") || err.contains("Revision"),
+        err.contains("failed")
+            || err.contains("error")
+            || err.contains("Error")
+            || err.contains("Revision"),
         "should fail with bad revset: {}",
         err
     );
@@ -424,5 +490,9 @@ fn list_rev_with_spec_filters_output() {
     let spec = r#"{"files": {"keep.txt": {"action": "keep"}}, "default": "reset"}"#;
     let out = repo.hunk_ok(&["list", "-r", "@-", "--spec", spec]);
     assert!(out.contains("keep.txt"), "should show keep.txt:\n{}", out);
-    assert!(!out.contains("drop.txt"), "should NOT show drop.txt:\n{}", out);
+    assert!(
+        !out.contains("drop.txt"),
+        "should NOT show drop.txt:\n{}",
+        out
+    );
 }

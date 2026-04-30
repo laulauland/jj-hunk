@@ -12,17 +12,7 @@ Select specific diff hunks when splitting, committing, or squashing—without in
 cargo install jj-hunk
 ```
 
-### 2. Configure jj
-
-Add to `~/.jjconfig.toml`:
-
-```toml
-[merge-tools.jj-hunk]
-program = "jj-hunk"
-edit-args = ["select", "$left", "$right"]
-```
-
-### 3. Verify
+### 2. Verify
 
 ```bash
 jj-hunk --help
@@ -184,15 +174,19 @@ jj-hunk integrates with jj's `--tool` mechanism:
 
 1. You run `jj-hunk split/commit/squash` with a JSON/YAML spec
 2. jj-hunk writes the spec to a temp file and sets `JJ_HUNK_SELECTION` env var
-3. jj invokes `jj-hunk select $left $right` as the diff tool
-4. jj-hunk reads the spec and modifies `$right` to include only selected hunks
-5. jj snapshots the result
+3. jj-hunk passes temporary `merge-tools.jj-hunk` config to jj when needed
+4. jj invokes `jj-hunk select $left $right` as the diff tool
+5. jj-hunk reads the spec and modifies `$right` to include only selected hunks
+6. jj snapshots the result
 
-For direct control:
+For direct control with `jj` itself, provide the same tool config explicitly or define it in your jj config:
 
 ```bash
 echo '{"files": {"src/foo.rs": {"hunks": [0]}}}' > /tmp/spec.json
-JJ_HUNK_SELECTION=/tmp/spec.json jj split -i --tool=jj-hunk -m "message"
+JJ_HUNK_SELECTION=/tmp/spec.json jj \
+  --config 'merge-tools.jj-hunk.program="jj-hunk"' \
+  --config 'merge-tools.jj-hunk.edit-args=["select", "$left", "$right"]' \
+  split -i --tool=jj-hunk -m "message"
 ```
 
 ## Use Cases
