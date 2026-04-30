@@ -10,6 +10,10 @@ use std::path::Path;
 use std::process::Command;
 use walkdir::WalkDir;
 
+const JJ_HUNK_TOOL_ARG: &str = "--tool=jj-hunk";
+const JJ_HUNK_PROGRAM_KEY: &str = "merge-tools.jj-hunk.program";
+const JJ_HUNK_EDIT_ARGS_KEY: &str = "merge-tools.jj-hunk.edit-args";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ListFormat {
     Json,
@@ -492,7 +496,11 @@ fn is_binary_data(bytes: &[u8]) -> bool {
     bytes.contains(&0) || std::str::from_utf8(bytes).is_err()
 }
 
-fn truncate_text(content: &str, max_bytes: Option<usize>, max_lines: Option<usize>) -> (String, bool) {
+fn truncate_text(
+    content: &str,
+    max_bytes: Option<usize>,
+    max_lines: Option<usize>,
+) -> (String, bool) {
     let mut truncated = false;
     let mut result = content.to_string();
 
@@ -540,8 +548,12 @@ fn spec_decision(spec: Option<&Spec>, path: &str) -> SpecDecision {
 
     if let Some(file_spec) = spec.files.get(path) {
         match file_spec {
-            FileSpec::Action { action: Action::Keep } => SpecDecision::KeepAll,
-            FileSpec::Action { action: Action::Reset } => SpecDecision::Skip,
+            FileSpec::Action {
+                action: Action::Keep,
+            } => SpecDecision::KeepAll,
+            FileSpec::Action {
+                action: Action::Reset,
+            } => SpecDecision::Skip,
             FileSpec::Selection(selection) => {
                 let selection = selection.to_selection();
                 if selection.is_empty() {
@@ -932,7 +944,7 @@ fn status_char(status: &str) -> &'static str {
 /// Select hunks (called by jj --tool)
 pub fn select(left: &str, right: &str) -> Result<()> {
     let spec_path = std::env::var("JJ_HUNK_SELECTION").ok();
-    
+
     let spec = if let Some(path) = spec_path {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("Failed to read spec from {}", path))?;
@@ -941,23 +953,27 @@ pub fn select(left: &str, right: &str) -> Result<()> {
         // No selection = keep everything
         return Ok(());
     };
-    
+
     let left_path = Path::new(left);
     let right_path = Path::new(right);
-    
+
     // Get all files in both directories
     let left_files = list_files(left_path);
     let right_files = list_files(right_path);
     let all_files: HashSet<_> = left_files.union(&right_files).cloned().collect();
-    
+
     for filepath in all_files {
         let file_spec = spec.files.get(&filepath);
-        
+
         match file_spec {
-            Some(FileSpec::Action { action: Action::Keep }) => {
+            Some(FileSpec::Action {
+                action: Action::Keep,
+            }) => {
                 // Keep as-is
             }
-            Some(FileSpec::Action { action: Action::Reset }) => {
+            Some(FileSpec::Action {
+                action: Action::Reset,
+            }) => {
                 reset_file(left_path, right_path, &filepath)?;
             }
             Some(FileSpec::Selection(selection)) => {
@@ -972,7 +988,7 @@ pub fn select(left: &str, right: &str) -> Result<()> {
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -981,7 +997,7 @@ fn list_files(dir: &Path) -> HashSet<String> {
     if !dir.exists() {
         return files;
     }
-    
+
     for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
         if entry.file_type().is_file() {
             if let Ok(rel) = entry.path().strip_prefix(dir) {
@@ -998,7 +1014,7 @@ fn list_files(dir: &Path) -> HashSet<String> {
 fn reset_file(left: &Path, right: &Path, filepath: &str) -> Result<()> {
     let left_file = left.join(filepath);
     let right_file = right.join(filepath);
-    
+
     if left_file.exists() {
         if let Some(parent) = right_file.parent() {
             fs::create_dir_all(parent)?;
@@ -1018,21 +1034,21 @@ fn apply_hunk_selection(
 ) -> Result<()> {
     let left_file = left.join(filepath);
     let right_file = right.join(filepath);
-    
+
     let before = if left_file.exists() {
         fs::read_to_string(&left_file)?
     } else {
         String::new()
     };
-    
+
     let after = if right_file.exists() {
         fs::read_to_string(&right_file)?
     } else {
         return Ok(());
     };
-    
+
     let result = apply_selected_hunks(&before, &after, selection);
-    
+
     fs::write(&right_file, result)?;
     Ok(())
 }
@@ -1065,23 +1081,66 @@ fn run_jj_with_selection(args: &[&str], spec: Option<&str>, spec_file: Option<&s
     let spec_content = resolve_spec_input(spec, spec_file)?;
     let temp_file = std::env::temp_dir().join(format!("jj-hunk-{}.spec", std::process::id()));
     fs::write(&temp_file, spec_content)?;
-    
+
+    let config_args = jj_hunk_tool_config_args()?;
+
     let status = Command::new("jj")
+        .args(&config_args)
         .args(args)
         .env("JJ_HUNK_SELECTION", &temp_file)
         .status()
         .context("Failed to run jj")?;
-    
+
     fs::remove_file(&temp_file).ok();
-    
+
     if !status.success() {
         anyhow::bail!("jj command failed");
     }
     Ok(())
 }
 
-pub fn split(spec: Option<&str>, spec_file: Option<&str>, message: &str, rev: Option<&str>) -> Result<()> {
-    let mut args = vec!["split", "--tool=jj-hunk", "-m", message];
+fn jj_hunk_tool_config_args() -> Result<Vec<String>> {
+    let mut args = Vec::new();
+
+    if !jj_config_key_exists(JJ_HUNK_PROGRAM_KEY) {
+        let program = std::env::current_exe()
+            .context("Failed to determine current jj-hunk executable path")?;
+        let program = program
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("jj-hunk executable path is not valid UTF-8"))?;
+        args.push("--config".to_string());
+        args.push(format!("{JJ_HUNK_PROGRAM_KEY}={}", toml_string(program)));
+    }
+
+    if !jj_config_key_exists(JJ_HUNK_EDIT_ARGS_KEY) {
+        args.push("--config".to_string());
+        args.push(format!(
+            r#"{JJ_HUNK_EDIT_ARGS_KEY}=["select", "$left", "$right"]"#
+        ));
+    }
+
+    Ok(args)
+}
+
+fn jj_config_key_exists(key: &str) -> bool {
+    Command::new("jj")
+        .args(["config", "get", key])
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn toml_string(value: &str) -> String {
+    serde_json::to_string(value).expect("string serialization should not fail")
+}
+
+pub fn split(
+    spec: Option<&str>,
+    spec_file: Option<&str>,
+    message: &str,
+    rev: Option<&str>,
+) -> Result<()> {
+    let mut args = vec!["split", JJ_HUNK_TOOL_ARG, "-m", message];
     if let Some(rev) = rev {
         args.push("-r");
         args.push(rev);
@@ -1091,14 +1150,14 @@ pub fn split(spec: Option<&str>, spec_file: Option<&str>, message: &str, rev: Op
 
 pub fn commit(spec: Option<&str>, spec_file: Option<&str>, message: &str) -> Result<()> {
     run_jj_with_selection(
-        &["commit", "-i", "--tool=jj-hunk", "-m", message],
+        &["commit", "-i", JJ_HUNK_TOOL_ARG, "-m", message],
         spec,
         spec_file,
     )
 }
 
 pub fn squash(spec: Option<&str>, spec_file: Option<&str>, rev: Option<&str>) -> Result<()> {
-    let mut args = vec!["squash", "-i", "--tool=jj-hunk"];
+    let mut args = vec!["squash", "-i", JJ_HUNK_TOOL_ARG];
     if let Some(rev) = rev {
         args.push("-r");
         args.push(rev);
