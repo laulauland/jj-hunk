@@ -252,6 +252,65 @@ fn list_rev_files_mode() {
     assert!(out.contains("bar.txt"));
 }
 
+#[test]
+fn list_merge_commit_shows_only_changes_from_merged_parent_tree() {
+    let repo = TestRepo::new("list-merge");
+
+    repo.write_file("a-file", "1\n2\n3\n");
+    repo.write_file("unmodified", "4\n5\n6\n");
+    repo.jj_ok(&["commit", "-m", "base"]);
+
+    repo.jj_ok(&["new", "@-", "-m", "A"]);
+    repo.write_file("a-file", "AAAA1\n2\n3\n");
+
+    repo.jj_ok(&["new", "@-", "-m", "B"]);
+    repo.write_file("a-file", "1\n2\nBBBB1\n");
+
+    repo.jj_ok(&["new", "heads(all())", "-m", "M"]);
+    repo.write_file("a-file", "AAAA1\nMMMM2\nBBBB1\n");
+
+    let output = repo.hunk_ok(&["list"]);
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let files = value["files"].as_array().unwrap();
+    assert_eq!(files.len(), 1, "unexpected list output: {output}");
+    assert_eq!(files[0]["path"], "a-file");
+
+    let hunks = files[0]["hunks"].as_array().unwrap();
+    assert_eq!(hunks.len(), 1, "unexpected list output: {output}");
+    assert_eq!(hunks[0]["removed"], "2\n");
+    assert_eq!(hunks[0]["added"], "MMMM2\n");
+}
+
+#[test]
+fn list_merge_commit_materializes_conflicted_parent_tree() {
+    let repo = TestRepo::new("list-merge-conflict");
+
+    repo.write_file("conflicted", "base\n");
+    repo.jj_ok(&["commit", "-m", "base"]);
+
+    repo.jj_ok(&["new", "@-", "-m", "A"]);
+    repo.write_file("conflicted", "left\n");
+
+    repo.jj_ok(&["new", "@-", "-m", "B"]);
+    repo.write_file("conflicted", "right\n");
+
+    repo.jj_ok(&["new", "heads(all())", "-m", "M"]);
+    repo.write_file("conflicted", "resolved\n");
+
+    let output = repo.hunk_ok(&["list"]);
+    let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+    let hunks = value["files"][0]["hunks"].as_array().unwrap();
+    assert_eq!(hunks.len(), 1, "unexpected list output: {output}");
+
+    let removed = hunks[0]["removed"].as_str().unwrap();
+    assert!(removed.contains("left"), "unexpected list output: {output}");
+    assert!(
+        removed.contains("right"),
+        "unexpected list output: {output}"
+    );
+    assert_eq!(hunks[0]["added"], "resolved\n");
+}
+
 // ---------------------------------------------------------------------------
 // split -r
 // ---------------------------------------------------------------------------

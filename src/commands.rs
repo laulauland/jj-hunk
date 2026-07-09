@@ -13,8 +13,11 @@ use walkdir::WalkDir;
 const JJ_HUNK_TOOL_ARG: &str = "--tool=jj-hunk";
 const JJ_HUNK_PROGRAM_KEY: &str = "merge-tools.jj-hunk.program";
 const JJ_HUNK_EDIT_ARGS_KEY: &str = "merge-tools.jj-hunk.edit-args";
+const JJ_HUNK_LIST_REQUEST: &str = "JJ_HUNK_LIST_REQUEST";
+const JJ_HUNK_LIST_OUTPUT: &str = "JJ_HUNK_LIST_OUTPUT";
+const JJ_HUNK_LIST_TOOL: &str = "jj-hunk-list";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum ListFormat {
     Json,
     Yaml,
@@ -27,7 +30,7 @@ impl Default for ListFormat {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum ListGrouping {
     None,
     Directory,
@@ -41,7 +44,7 @@ impl Default for ListGrouping {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 pub enum BinaryMode {
     Skip,
     Mark,
@@ -54,7 +57,7 @@ impl Default for BinaryMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ListMode {
     Full,
     Files,
@@ -67,7 +70,7 @@ impl Default for ListMode {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ListOptions {
     pub rev: Option<String>,
     pub include: Vec<String>,
@@ -182,7 +185,7 @@ enum SpecTemplateEntry {
     Action { action: String },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct DiffSummaryEntry {
     status: String,
     path: String,
@@ -192,25 +195,63 @@ struct DiffSummaryEntry {
     target: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct ListRequest {
+    options: ListOptions,
+    summary_entries: Vec<DiffSummaryEntry>,
+}
+
 /// List hunks in current working copy or a specific revision
 pub fn list<T>(options: T) -> Result<()>
 where
     T: Into<ListOptions>,
 {
-    let options = options.into();
-    let spec = resolve_optional_spec(options.spec.as_deref(), options.spec_file.as_deref())?
-        .map(|content| Spec::from_str(&content))
-        .transpose()?;
+    let mut options = options.into();
+    options.spec = resolve_optional_spec(options.spec.as_deref(), options.spec_file.as_deref())?;
+    options.spec_file = None;
+
+    let summary_entries = read_diff_summary(options.rev.as_deref())?;
+    let rev = options.rev.clone();
+    let request = ListRequest {
+        options,
+        summary_entries,
+    };
+    let rendered = run_materialized_list(&request, rev.as_deref())?;
+    print!("{rendered}");
+    Ok(())
+}
+
+pub fn list_materialized(left: &str, right: &str) -> Result<()> {
+    let request_path =
+        std::env::var(JJ_HUNK_LIST_REQUEST).context("Missing internal list request path")?;
+    let output_path =
+        std::env::var(JJ_HUNK_LIST_OUTPUT).context("Missing internal list output path")?;
+    let request: ListRequest =
+        serde_json::from_slice(&fs::read(&request_path).with_context(|| {
+            format!("Failed to read internal list request from {request_path}")
+        })?)
+        .context("Failed to parse internal list request")?;
+
+    let rendered = render_materialized_list(request, Path::new(left), Path::new(right))?;
+    fs::write(&output_path, rendered)
+        .with_context(|| format!("Failed to write internal list output to {output_path}"))?;
+    Ok(())
+}
+
+fn render_materialized_list(
+    request: ListRequest,
+    before_root: &Path,
+    after_root: &Path,
+) -> Result<String> {
+    let options = request.options;
+    let spec = options.spec.as_deref().map(Spec::from_str).transpose()?;
 
     let include = normalize_patterns(&options.include);
     let exclude = normalize_patterns(&options.exclude);
 
-    let summary_entries = read_diff_summary(options.rev.as_deref())?;
-    let (before_rev, after_rev) = resolve_revisions(options.rev.as_deref());
-
     let mut files = Vec::new();
 
-    for entry in summary_entries {
+    for entry in request.summary_entries {
         let path = primary_path(&entry);
         if path.is_empty() {
             continue;
@@ -226,16 +267,8 @@ where
         }
 
         let file_paths = file_paths_for_entry(&entry, &path);
-        let before_bytes = file_paths
-            .before
-            .as_deref()
-            .map(|p| read_jj_file(before_rev.as_deref(), p))
-            .unwrap_or_default();
-        let after_bytes = file_paths
-            .after
-            .as_deref()
-            .map(|p| read_jj_file(after_rev.as_deref(), p))
-            .unwrap_or_default();
+        let before_bytes = read_materialized_file(before_root, file_paths.before.as_deref())?;
+        let after_bytes = read_materialized_file(after_root, file_paths.after.as_deref())?;
 
         let is_binary = is_binary_data(&before_bytes) || is_binary_data(&after_bytes);
         if is_binary && options.binary == BinaryMode::Skip {
@@ -305,29 +338,17 @@ where
             };
 
             match options.format {
-                ListFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&output)?);
-                }
-                ListFormat::Yaml => {
-                    println!("{}", serde_yaml::to_string(&output)?);
-                }
-                ListFormat::Text => {
-                    print!("{}", render_text_output(&output));
-                }
+                ListFormat::Json => Ok(format!("{}\n", serde_json::to_string_pretty(&output)?)),
+                ListFormat::Yaml => Ok(format!("{}\n", serde_yaml::to_string(&output)?)),
+                ListFormat::Text => Ok(render_text_output(&output)),
             }
         }
         ListMode::Files => {
             let summary = build_summary_output(files, options.group);
             match options.format {
-                ListFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&summary)?);
-                }
-                ListFormat::Yaml => {
-                    println!("{}", serde_yaml::to_string(&summary)?);
-                }
-                ListFormat::Text => {
-                    print!("{}", render_text_summary_output(&summary));
-                }
+                ListFormat::Json => Ok(format!("{}\n", serde_json::to_string_pretty(&summary)?)),
+                ListFormat::Yaml => Ok(format!("{}\n", serde_yaml::to_string(&summary)?)),
+                ListFormat::Text => Ok(render_text_summary_output(&summary)),
             }
         }
         ListMode::SpecTemplate => {
@@ -336,18 +357,12 @@ where
             }
             let template = build_spec_template(files);
             match options.format {
-                ListFormat::Json => {
-                    println!("{}", serde_json::to_string_pretty(&template)?);
-                }
-                ListFormat::Yaml => {
-                    println!("{}", serde_yaml::to_string(&template)?);
-                }
-                ListFormat::Text => {}
+                ListFormat::Json => Ok(format!("{}\n", serde_json::to_string_pretty(&template)?)),
+                ListFormat::Yaml => Ok(format!("{}\n", serde_yaml::to_string(&template)?)),
+                ListFormat::Text => unreachable!(),
             }
         }
     }
-
-    Ok(())
 }
 
 const SUMMARY_TEMPLATE: &str = r#""{\"status\":" ++ self.status().escape_json() ++ ",\"path\":" ++ self.path().display().escape_json() ++ ",\"source\":" ++ self.source().path().display().escape_json() ++ ",\"target\":" ++ self.target().path().display().escape_json() ++ "}\n""#;
@@ -371,12 +386,69 @@ fn resolve_optional_spec(spec: Option<&str>, spec_file: Option<&str>) -> Result<
     Ok(Some(resolve_spec_input(spec, spec_file)?))
 }
 
-fn resolve_revisions(revset: Option<&str>) -> (Option<String>, Option<String>) {
-    if let Some(rev) = revset {
-        (Some(format!("({})-", rev)), Some(rev.to_string()))
-    } else {
-        (Some("@-".to_string()), None)
-    }
+fn run_materialized_list(request: &ListRequest, revset: Option<&str>) -> Result<String> {
+    let temp_dir = std::env::temp_dir();
+    let process_id = std::process::id();
+    let request_path = temp_dir.join(format!("jj-hunk-{process_id}.list-request"));
+    let output_path = temp_dir.join(format!("jj-hunk-{process_id}.list-output"));
+
+    fs::remove_file(&request_path).ok();
+    fs::remove_file(&output_path).ok();
+    fs::write(&request_path, serde_json::to_vec(request)?)
+        .with_context(|| format!("Failed to write list request to {}", request_path.display()))?;
+
+    let result = (|| {
+        let program = std::env::current_exe()
+            .context("Failed to determine current jj-hunk executable path")?;
+        let program = program
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("jj-hunk executable path is not valid UTF-8"))?;
+
+        let mut args = vec![
+            "--config".to_string(),
+            format!(
+                "merge-tools.{JJ_HUNK_LIST_TOOL}.program={}",
+                toml_string(program)
+            ),
+            "--config".to_string(),
+            format!(
+                r#"merge-tools.{JJ_HUNK_LIST_TOOL}.diff-args=["list-materialized", "$left", "$right"]"#
+            ),
+            "--config".to_string(),
+            format!(r#"merge-tools.{JJ_HUNK_LIST_TOOL}.diff-invocation-mode="dir""#),
+            "--config".to_string(),
+            format!("merge-tools.{JJ_HUNK_LIST_TOOL}.diff-do-chdir=false"),
+            "diff".to_string(),
+            format!("--tool={JJ_HUNK_LIST_TOOL}"),
+        ];
+        if let Some(revset) = revset {
+            args.push("-r".to_string());
+            args.push(revset.to_string());
+        }
+
+        let output = Command::new("jj")
+            .args(&args)
+            .env(JJ_HUNK_LIST_REQUEST, &request_path)
+            .env(JJ_HUNK_LIST_OUTPUT, &output_path)
+            .output()
+            .context("Failed to run jj diff")?;
+
+        if !output.status.success() || !output_path.exists() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr.trim();
+            if detail.is_empty() {
+                anyhow::bail!("jj diff did not produce list output");
+            }
+            anyhow::bail!("jj diff failed: {detail}");
+        }
+
+        fs::read_to_string(&output_path)
+            .with_context(|| format!("Failed to read list output from {}", output_path.display()))
+    })();
+
+    fs::remove_file(&request_path).ok();
+    fs::remove_file(&output_path).ok();
+    result
 }
 
 fn read_diff_summary(revset: Option<&str>) -> Result<Vec<DiffSummaryEntry>> {
@@ -473,19 +545,18 @@ fn file_paths_for_entry(entry: &DiffSummaryEntry, path: &str) -> FilePaths {
     }
 }
 
-fn read_jj_file(rev: Option<&str>, path: &str) -> Vec<u8> {
-    let mut args = vec!["file", "show"];
-    if let Some(rev) = rev {
-        args.push("-r");
-        args.push(rev);
-    }
-    args.push(path);
+fn read_materialized_file(root: &Path, path: Option<&str>) -> Result<Vec<u8>> {
+    let Some(path) = path else {
+        return Ok(Vec::new());
+    };
 
-    Command::new("jj")
-        .args(&args)
-        .output()
-        .map(|o| o.stdout)
-        .unwrap_or_default()
+    let file_path = root.join(path);
+    match fs::read(&file_path) {
+        Ok(contents) => Ok(contents),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error)
+            .with_context(|| format!("Failed to read materialized file {}", file_path.display())),
+    }
 }
 
 fn is_binary_data(bytes: &[u8]) -> bool {

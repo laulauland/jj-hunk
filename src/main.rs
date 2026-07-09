@@ -20,6 +20,9 @@ enum Commands {
     /// List hunks in current changes
     List(ListArgs),
 
+    #[command(hide = true)]
+    ListMaterialized { left: String, right: String },
+
     /// Select hunks (called by jj --tool)
     Select {
         /// Path to "before" directory
@@ -135,6 +138,7 @@ fn main() -> Result<()> {
 
             commands::list(options)
         }
+        Commands::ListMaterialized { left, right } => commands::list_materialized(&left, &right),
         Commands::Select { left, right } => commands::select(&left, &right),
         Commands::Split {
             spec,
