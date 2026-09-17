@@ -6,6 +6,17 @@ description = "Programmatic hunk selection for jj"
 license = "MIT"
 repository = "https://github.com/laulauland/jj-hunk"
 
+[package.metadata.binstall]
+pkg-fmt = "tgz"
+bin-dir = "{ name }/{ version }/bin/{ bin }{ binary-ext }"
+
+# Release assets use Homebrew bottle names, not Rust target triples.
+[package.metadata.binstall.overrides.aarch64-apple-darwin]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }.arm64_sequoia.bottle.tar.gz"
+
+[package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ version }.x86_64_linux.bottle.tar.gz"
+
 [workspace]
 members = ["crates/hunkset"]
 

@@ -133,6 +133,12 @@ cargo install jj-hunk
 jj-hunk --help
 ```
 
+Or download a prebuilt binary with [cargo-binstall](https://github.com/cargo-bins/cargo-binstall). Pass `--git` because the crates.io release is behind:
+
+```bash
+cargo binstall --git https://github.com/laulauland/jj-hunk jj-hunk
+```
+
 ## Command reference
 
 | Command | Result |
